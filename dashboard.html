@@ -1,0 +1,1975 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Ground Station Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root {
+  --bg:        #070b12;
+  --bg2:       #0d1320;
+  --bg3:       #111927;
+  --border:    #1a2336;
+  --border2:   #243048;
+  --text:      #8fa3c0;
+  --text2:     #c5d4e8;
+  --muted:     #3d5070;
+  --teal:      #00d4aa;
+  --teal-dim:  #00957a;
+  --amber:     #f59e0b;
+  --amber-dim: #92600a;
+  --blue:      #4da6ff;
+  --coral:     #ff6b6b;
+  --green:     #22c55e;
+  --purple:    #a78bfa;
+  --mono:      'JetBrains Mono', monospace;
+  --display:   'Syne', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: 13px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Grid noise texture ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(rgba(0,212,170,.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,170,.015) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Layout ── */
+.wrapper {
+  position: relative;
+  z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 20px 40px;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border2);
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.logo-icon {
+  width: 38px; height: 38px;
+  border: 1.5px solid var(--teal);
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--teal);
+  font-size: 18px;
+  position: relative;
+  overflow: hidden;
+}
+.logo-icon::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at center, rgba(0,212,170,.15), transparent 70%);
+}
+
+.logo-text h1 {
+  font-family: var(--display);
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.logo-text p {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+}
+
+.ws-badge {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid;
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  transition: all .3s;
+}
+.ws-badge.ok   { border-color: var(--teal);  color: var(--teal);  background: rgba(0,212,170,.07); }
+.ws-badge.fail { border-color: var(--coral); color: var(--coral); background: rgba(255,107,107,.07); }
+.ws-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+#clock {
+  color: var(--muted);
+  letter-spacing: .06em;
+  font-size: 11px;
+}
+
+/* ── Grid sections ── */
+.grid-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.grid-bottom {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .grid-main   { grid-template-columns: 1fr 1fr; }
+  .grid-bottom { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .grid-main { grid-template-columns: 1fr; }
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color .2s;
+}
+.card:hover { border-color: var(--border2); }
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent, transparent);
+  border-radius: 10px 10px 0 0;
+}
+.card.accent-teal  { --accent: var(--teal); }
+.card.accent-amber { --accent: var(--amber); }
+.card.accent-blue  { --accent: var(--blue); }
+.card.accent-coral { --accent: var(--coral); }
+.card.accent-green { --accent: var(--green); }
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.card-title {
+  font-size: 9px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.card-title .icon { font-size: 12px; }
+
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+}
+.status-dot.ok     { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.warn   { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.status-dot.err    { background: var(--coral); box-shadow: 0 0 6px var(--coral); }
+.status-dot.off    { background: var(--muted); }
+
+/* ── Metric rows ── */
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-label { color: var(--muted); font-size: 11px; }
+.metric-value { color: var(--text2); font-weight: 600; }
+.metric-value.ok     { color: var(--green); }
+.metric-value.warn   { color: var(--amber); }
+.metric-value.err    { color: var(--coral); }
+.metric-value.teal   { color: var(--teal); }
+.metric-value.blue   { color: var(--blue); }
+.metric-value.amber  { color: var(--amber); }
+
+/* ── Big number ── */
+.big-num {
+  font-family: var(--display);
+  font-size: 2.8rem;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.big-label { font-size: 10px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+
+/* ── Progress bar ── */
+.bar-wrap {
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  margin: 6px 0 2px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width .6s ease;
+}
+
+/* ── Gauge ring ── */
+.gauge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 0;
+}
+.gauge {
+  flex-shrink: 0;
+  width: 60px; height: 60px;
+  position: relative;
+}
+.gauge svg { transform: rotate(-90deg); }
+.gauge-val {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+}
+.gauge-info { flex: 1; }
+.gauge-info .label { font-size: 10px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 2px; }
+.gauge-info .val   { font-size: 1.1rem; font-weight: 700; color: #fff; }
+
+/* ── Services list ── */
+.service-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.service-row:last-child { border-bottom: none; }
+.service-name  { flex: 1; color: var(--text2); }
+.service-label { font-size: 10px; color: var(--muted); }
+.service-badge {
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.service-badge.active   { color: var(--green); border-color: var(--green); background: rgba(34,197,94,.08); }
+.service-badge.inactive { color: var(--muted); border-color: var(--muted); background: transparent; }
+.service-badge.failed   { color: var(--coral); border-color: var(--coral); background: rgba(255,107,107,.08); }
+
+/* ── SDR card ── */
+.sdr-visual {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.sdr-icon {
+  width: 52px; height: 52px;
+  border: 1.5px solid var(--border2);
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  background: var(--bg3);
+  transition: all .3s;
+}
+.sdr-icon.connected { border-color: var(--teal); background: rgba(0,212,170,.05); }
+.sdr-name { font-size: 1rem; font-weight: 700; color: #fff; margin-bottom: 3px; }
+.sdr-sub  { font-size: 10px; color: var(--muted); }
+
+/* ── Network ── */
+.iface-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.iface-row:last-child { border-bottom: none; }
+.iface-name { color: var(--teal); width: 60px; flex-shrink: 0; }
+.iface-ip   { color: var(--text2); font-weight: 600; }
+
+/* ── ADS-B big stats ── */
+.adsb-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.adsb-stat {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.adsb-stat .n {
+  font-family: var(--display);
+  font-size: 2rem;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+}
+.adsb-stat .l { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; margin-top: 4px; }
+
+/* ── Temp warning ── */
+.temp-bar-fill { background: var(--green); }
+.temp-bar-fill.warm { background: var(--amber); }
+.temp-bar-fill.hot  { background: var(--coral); }
+
+.grid-gnss {
+  display: grid;
+  grid-template-columns: 240px 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+@media (max-width: 900px) {
+  .grid-gnss { grid-template-columns: 1fr 1fr; }
+  .grid-gnss .card:last-child { grid-column: span 2; }
+}
+@media (max-width: 560px) {
+  .grid-gnss { grid-template-columns: 1fr; }
+  .grid-gnss .card:last-child { grid-column: span 1; }
+}
+
+.snr-bar {
+  display: inline-block;
+  height: 8px;
+  border-radius: 2px;
+  vertical-align: middle;
+  min-width: 2px;
+  transition: width .4s;
+}
+
+.const-pill {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 11px;
+}
+
+.grid-noaa {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+@media (max-width: 700px) { .grid-noaa { grid-template-columns: 1fr; } }
+
+.card.accent-purple { --accent: var(--purple); }
+.pass-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.pass-row:last-child { border-bottom: none; }
+.pass-sat  { color: var(--amber); font-weight: 700; width: 80px; flex-shrink: 0; }
+.pass-time { color: var(--text2); flex: 1; }
+.pass-elev { color: var(--teal); width: 50px; text-align: right; }
+.pass-dur  { color: var(--muted); width: 50px; text-align: right; font-size: 11px; }
+
+.grid-space {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+@media (max-width: 800px) { .grid-space { grid-template-columns: 1fr; } }
+
+.filter-btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.filter-btn:hover, .filter-btn.active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: rgba(77,166,255,.08);
+}
+.pass-type-iss     { color: var(--blue); }
+.pass-type-noaa    { color: var(--amber); }
+.pass-type-galileo { color: var(--teal); }
+
+/* ── Footer ── */
+footer {
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: .06em;
+}
+
+/* ── Animations ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.card { animation: fadeIn .4s ease both; }
+.card:nth-child(2) { animation-delay: .05s; }
+.card:nth-child(3) { animation-delay: .1s; }
+.card:nth-child(4) { animation-delay: .15s; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">⬡</div>
+      <div class="logo-text">
+        <h1>Ground Station</h1>
+        <p>Raspberry Pi · RTL-SDR Monitor</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="clock">--:--:--</span>
+      <div class="ws-badge fail" id="ws-badge">
+        <span class="dot"></span>
+        <span id="ws-label">Connexion…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Row 1 : System · SDR · ADS-B -->
+  <div class="grid-main">
+
+    <!-- Système -->
+    <div class="card accent-teal" id="card-system">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">⬡</span> Système</span>
+        <div class="status-dot ok" id="sys-dot"></div>
+      </div>
+
+      <div class="gauge-wrap" style="margin-bottom:14px">
+        <div class="gauge">
+          <svg width="60" height="60" viewBox="0 0 60 60">
+            <circle cx="30" cy="30" r="24" fill="none" stroke="#1a2336" stroke-width="5"/>
+            <circle cx="30" cy="30" r="24" fill="none" stroke="var(--teal)" stroke-width="5"
+              stroke-dasharray="150.8" id="cpu-ring"
+              stroke-dashoffset="150.8" stroke-linecap="round"/>
+          </svg>
+          <div class="gauge-val" id="cpu-pct">0%</div>
+        </div>
+        <div class="gauge-info">
+          <div class="label">CPU</div>
+          <div class="val" id="cpu-val">–</div>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <span class="metric-label">RAM</span>
+        <span class="metric-value" id="ram-val">–</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="ram-bar" style="width:0%;background:var(--blue)"></div></div>
+
+      <div class="metric-row">
+        <span class="metric-label">Disque</span>
+        <span class="metric-value" id="disk-val">–</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="disk-bar" style="width:0%;background:var(--purple)"></div></div>
+
+      <div class="metric-row" style="margin-top:6px">
+        <span class="metric-label">Température</span>
+        <span class="metric-value" id="temp-val">–</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill temp-bar-fill" id="temp-bar" style="width:0%"></div></div>
+
+      <div class="metric-row" style="margin-top:4px">
+        <span class="metric-label">Uptime</span>
+        <span class="metric-value teal" id="uptime-val">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Hostname</span>
+        <span class="metric-value" id="hostname-val">–</span>
+      </div>
+    </div>
+
+    <!-- RTL-SDR -->
+    <div class="card accent-amber" id="card-sdr">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">◈</span> RTL-SDR</span>
+        <div class="status-dot off" id="sdr-dot"></div>
+      </div>
+
+      <div class="sdr-visual">
+        <div class="sdr-icon" id="sdr-icon">📡</div>
+        <div>
+          <div class="sdr-name" id="sdr-name">Non détecté</div>
+          <div class="sdr-sub" id="sdr-chip">–</div>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <span class="metric-label">Statut</span>
+        <span class="metric-value" id="sdr-status">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">En cours d'utilisation</span>
+        <span class="metric-value" id="sdr-inuse">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Plage fréquences</span>
+        <span class="metric-value amber" id="sdr-range">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Bias-T</span>
+        <span class="metric-value" id="sdr-biast">–</span>
+      </div>
+    </div>
+
+    <!-- ADS-B / dump1090 -->
+    <div class="card accent-blue" id="card-adsb">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">✈</span> ADS-B · dump1090</span>
+        <div class="status-dot off" id="adsb-dot"></div>
+      </div>
+
+      <div class="adsb-stats">
+        <div class="adsb-stat">
+          <div class="n" id="adsb-planes">–</div>
+          <div class="l">Avions</div>
+        </div>
+        <div class="adsb-stat">
+          <div class="n" id="adsb-msgs">–</div>
+          <div class="l">Msg / min</div>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <span class="metric-label">Service</span>
+        <span class="metric-value" id="adsb-service">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Interface web</span>
+        <span class="metric-value blue" id="adsb-http">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Flux SBS</span>
+        <span class="metric-value" id="adsb-sbs">–</span>
+      </div>
+
+      <!-- Boutons contrôle dump1090 -->
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button onclick="dump1090Control('start')"
+          style="flex:1;padding:9px;border-radius:6px;border:1px solid var(--blue);
+                 background:rgba(77,166,255,.08);color:var(--blue);font-family:var(--mono);
+                 font-size:11px;letter-spacing:.08em;cursor:pointer;">
+          ▶ DÉMARRER
+        </button>
+        <button onclick="dump1090Control('stop')"
+          style="flex:1;padding:9px;border-radius:6px;border:1px solid var(--coral);
+                 background:rgba(255,107,107,.08);color:var(--coral);font-family:var(--mono);
+                 font-size:11px;letter-spacing:.08em;cursor:pointer;">
+          ■ ARRÊTER
+        </button>
+        <a id="adsb-link" href="#" target="_blank"
+          style="padding:9px 12px;border-radius:6px;border:1px solid var(--border2);
+                 color:var(--muted);font-family:var(--mono);font-size:11px;
+                 text-decoration:none;cursor:pointer;">
+          🗺
+        </a>
+      </div>
+      <div id="adsb-msg" style="margin-top:6px;font-size:11px;color:var(--muted);
+                                  text-align:center;min-height:14px;"></div>
+    </div>
+
+  </div>
+
+  <!-- Row 2 : Services · Réseau -->
+  <div class="grid-bottom">
+
+    <!-- Services -->
+    <div class="card accent-green">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">◎</span> Services systemd</span>
+      </div>
+      <div id="services-list">
+        <div class="service-row">
+          <span class="service-name muted">Chargement…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Réseau -->
+    <div class="card accent-coral">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">⌁</span> Réseau</span>
+      </div>
+      <div id="ifaces-list"></div>
+      <div style="margin-top:14px">
+        <div class="metric-row">
+          <span class="metric-label">↑ Envoyé</span>
+          <span class="metric-value" id="net-sent">–</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">↓ Reçu</span>
+          <span class="metric-value" id="net-recv">–</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Row 3 : GNSS / Galileo -->
+  <h2 style="font-family:var(--display);font-size:.8rem;font-weight:800;
+             letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+             margin:24px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="color:var(--teal)">◈</span> GNSS · Galileo / GPS
+  </h2>
+
+  <div class="grid-gnss">
+
+    <!-- Sky plot -->
+    <div class="card accent-teal">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">◎</span> Sky Plot</span>
+        <div class="status-dot off" id="gnss-dot"></div>
+      </div>
+      <div style="display:flex;justify-content:center;">
+        <svg id="skyplot" width="220" height="220" viewBox="-110 -110 220 220">
+          <!-- Cercles d'élévation -->
+          <circle r="100" fill="none" stroke="#1a2336" stroke-width="1"/>
+          <circle r="67"  fill="none" stroke="#1a2336" stroke-width=".8" stroke-dasharray="3 3"/>
+          <circle r="33"  fill="none" stroke="#1a2336" stroke-width=".8" stroke-dasharray="3 3"/>
+          <circle r="4"   fill="#1a2336"/>
+          <!-- Labels élévation -->
+          <text x="2" y="-34"  fill="#3d5070" font-size="8" font-family="'JetBrains Mono',monospace">60°</text>
+          <text x="2" y="-68"  fill="#3d5070" font-size="8" font-family="'JetBrains Mono',monospace">30°</text>
+          <text x="2" y="-102" fill="#3d5070" font-size="8" font-family="'JetBrains Mono',monospace">0°</text>
+          <!-- Axes N/S/E/W -->
+          <line x1="0" y1="-100" x2="0" y2="100" stroke="#1a2336" stroke-width=".5"/>
+          <line x1="-100" y1="0" x2="100" y2="0" stroke="#1a2336" stroke-width=".5"/>
+          <text x="0"    y="-104" text-anchor="middle" fill="#3d5070" font-size="9" font-family="'JetBrains Mono',monospace">N</text>
+          <text x="0"    y="112"  text-anchor="middle" fill="#3d5070" font-size="9" font-family="'JetBrains Mono',monospace">S</text>
+          <text x="105"  y="3"    text-anchor="start"  fill="#3d5070" font-size="9" font-family="'JetBrains Mono',monospace">E</text>
+          <text x="-105" y="3"    text-anchor="end"    fill="#3d5070" font-size="9" font-family="'JetBrains Mono',monospace">W</text>
+          <!-- Satellites (injectés par JS) -->
+          <g id="sky-sats"></g>
+        </svg>
+      </div>
+      <!-- Légende -->
+      <div style="display:flex;gap:14px;justify-content:center;margin-top:10px;flex-wrap:wrap;">
+        <span style="font-size:10px;color:#4da6ff;display:flex;align-items:center;gap:4px;">
+          <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#4da6ff"/></svg>GPS
+        </span>
+        <span style="font-size:10px;color:#00d4aa;display:flex;align-items:center;gap:4px;">
+          <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#00d4aa"/></svg>Galileo
+        </span>
+        <span style="font-size:10px;color:#f59e0b;display:flex;align-items:center;gap:4px;">
+          <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#f59e0b"/></svg>GLONASS
+        </span>
+        <span style="font-size:10px;color:#a78bfa;display:flex;align-items:center;gap:4px;">
+          <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#a78bfa"/></svg>BeiDou
+        </span>
+      </div>
+    </div>
+
+    <!-- Fix et position -->
+    <div class="card accent-teal">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">⊕</span> Position</span>
+        <span class="service-badge inactive" id="fix-badge">NO FIX</span>
+      </div>
+
+      <div style="text-align:center;padding:10px 0 16px;">
+        <div style="font-family:var(--display);font-size:2.4rem;font-weight:800;color:#fff;line-height:1" id="fix-sats">–</div>
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:4px">Satellites utilisés</div>
+      </div>
+
+      <div class="metric-row">
+        <span class="metric-label">Latitude</span>
+        <span class="metric-value teal" id="fix-lat">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Longitude</span>
+        <span class="metric-value teal" id="fix-lon">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Altitude</span>
+        <span class="metric-value" id="fix-alt">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">HDOP</span>
+        <span class="metric-value" id="fix-hdop">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Type de fix</span>
+        <span class="metric-value amber" id="fix-type">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">GNSS-SDR</span>
+        <span class="metric-value" id="gnss-proc">–</span>
+      </div>
+
+      <!-- Boutons contrôle -->
+      <div style="display:flex;gap:8px;margin-top:16px;">
+        <button id="btn-start" onclick="gnssControl('start')"
+          style="flex:1;padding:9px;border-radius:6px;border:1px solid var(--teal);
+                 background:rgba(0,212,170,.1);color:var(--teal);font-family:var(--mono);
+                 font-size:11px;letter-spacing:.08em;cursor:pointer;transition:all .2s;">
+          ▶ DÉMARRER
+        </button>
+        <button id="btn-stop" onclick="gnssControl('stop')"
+          style="flex:1;padding:9px;border-radius:6px;border:1px solid var(--coral);
+                 background:rgba(255,107,107,.1);color:var(--coral);font-family:var(--mono);
+                 font-size:11px;letter-spacing:.08em;cursor:pointer;transition:all .2s;">
+          ■ ARRÊTER
+        </button>
+      </div>
+      <div id="gnss-msg" style="margin-top:8px;font-size:11px;color:var(--muted);min-height:16px;text-align:center;"></div>
+    </div>
+
+    <!-- Tableau satellites -->
+    <div class="card accent-teal" style="grid-column: span 2;">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">◈</span> Satellites en vue</span>
+        <span style="font-size:11px;color:var(--muted)" id="sat-count">–</span>
+      </div>
+
+      <!-- Résumé par constellation -->
+      <div id="const-summary" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;"></div>
+
+      <!-- Tableau -->
+      <div style="overflow-x:auto;">
+        <table id="sat-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="color:var(--muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase;">
+              <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">PRN</th>
+              <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">Constellation</th>
+              <th style="padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)">Élév.</th>
+              <th style="padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)">Azimut</th>
+              <th style="padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)">SNR (dB)</th>
+              <th style="padding:6px 10px;text-align:center;border-bottom:1px solid var(--border)">Utilisé</th>
+              <th style="padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)">Signal</th>
+            </tr>
+          </thead>
+          <tbody id="sat-tbody">
+            <tr><td colspan="7" style="padding:20px;text-align:center;color:var(--muted)">
+              En attente de données GNSS-SDR…
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ NOAA + Spectre ══ -->
+  <h2 style="font-family:var(--display);font-size:.8rem;font-weight:800;
+             letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+             margin:24px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="color:var(--amber)">◈</span> NOAA · Satellites météo APT
+  </h2>
+
+  <div class="grid-noaa">
+
+    <!-- Prochains passages -->
+    <div class="card accent-amber">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">↗</span> Prochains passages</span>
+        <span style="font-size:10px;color:var(--muted)" id="noaa-update">–</span>
+      </div>
+      <div id="noaa-passes">
+        <div style="color:var(--muted);font-size:11px;padding:12px 0">Calcul en cours…</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button onclick="forceRecord()"
+        style="flex:1;padding:9px;border-radius:6px;
+               border:1px solid var(--amber);background:rgba(251,191,36,.08);
+               color:var(--amber);font-family:var(--mono);font-size:11px;
+               letter-spacing:.08em;cursor:pointer;">
+        ⏺ ENREGISTRER PROCHAIN PASSAGE
+      </button>
+      <button id="btn-noaa-toggle" onclick="toggleNoaa()"
+        style="padding:9px 14px;border-radius:6px;
+               border:1px solid var(--green);background:rgba(34,197,94,.08);
+               color:var(--green);font-family:var(--mono);font-size:11px;
+               letter-spacing:.08em;cursor:pointer;">
+        ● AUTO
+      </button>
+      <button onclick="resetNoaa()"
+        style="padding:9px 14px;border-radius:6px;
+               border:1px solid var(--coral);background:rgba(255,107,107,.08);
+               color:var(--coral);font-family:var(--mono);font-size:11px;
+               letter-spacing:.08em;cursor:pointer;">
+        ↺ RESET
+      </button>
+      </div>
+      <div id="noaa-msg" style="margin-top:6px;font-size:11px;color:var(--muted);text-align:center;min-height:14px;"></div>
+    </div>
+
+    <!-- Statut + dernière image -->
+    <div class="card accent-amber">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">🌍</span> Dernière image reçue</span>
+        <span class="service-badge inactive" id="noaa-status-badge">IDLE</span>
+      </div>
+      <div id="noaa-status-msg" style="font-size:11px;color:var(--muted);margin-bottom:12px;">
+        En attente de passage…
+      </div>
+      <div id="noaa-image-wrap" style="text-align:center;">
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;
+                    padding:32px;color:var(--muted);font-size:11px;">
+          Aucune image reçue
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Spectre -->
+  <h2 style="font-family:var(--display);font-size:.8rem;font-weight:800;
+             letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+             margin:24px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="color:var(--purple)">◈</span> Analyseur de spectre
+  </h2>
+
+  <div class="card accent-purple" style="margin-bottom:14px;">
+    <div class="card-header">
+      <span class="card-title"><span class="icon">〰</span> Waterfall FFT</span>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <!-- Presets fréquences -->
+        <select id="spec-preset" onchange="applyPreset()"
+          style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);
+                 font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:4px;">
+          <option value="80M|110M|200k">FM Radio (80–110 MHz)</option>
+          <option value="137M|138.5M|10k">NOAA APT (137–138.5 MHz)</option>
+          <option value="1090M|1091M|10k">ADS-B (1090 MHz)</option>
+          <option value="1575M|1576M|10k">Galileo L1 (1575 MHz)</option>
+          <option value="400M|410M|100k">Custom (400–410 MHz)</option>
+        </select>
+        <button id="btn-spec-start" onclick="toggleSpectrum()"
+          style="padding:5px 14px;border-radius:5px;border:1px solid var(--purple);
+                 background:rgba(167,139,250,.1);color:var(--purple);font-family:var(--mono);
+                 font-size:10px;letter-spacing:.08em;cursor:pointer;">
+          ▶ SCANNER
+        </button>
+        <span id="spec-status" style="font-size:10px;color:var(--muted)">Inactif</span>
+      </div>
+    </div>
+
+    <!-- Waterfall canvas -->
+    <div style="position:relative;overflow:hidden;border-radius:6px;background:#000;">
+      <canvas id="waterfall" width="800" height="200"
+        style="width:100%;display:block;image-rendering:pixelated;"></canvas>
+      <!-- Axe fréquences (overlay) -->
+      <canvas id="freq-axis" width="800" height="20"
+        style="width:100%;display:block;background:#0d1320;"></canvas>
+    </div>
+
+    <!-- Courbe de puissance instantanée -->
+    <canvas id="power-curve" width="800" height="80"
+      style="width:100%;display:block;border-radius:6px;background:var(--bg3);
+             margin-top:6px;"></canvas>
+
+    <div style="display:flex;justify-content:space-between;
+                font-size:10px;color:var(--muted);margin-top:6px;">
+      <span>-80 dBm</span>
+      <span id="spec-range">–</span>
+      <span>-20 dBm</span>
+    </div>
+  </div>
+
+  <!-- ══ ISS + Passes + Météo spatiale ══ -->
+  <h2 style="font-family:var(--display);font-size:.8rem;font-weight:800;
+             letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+             margin:24px 0 12px;display:flex;align-items:center;gap:8px;">
+    <span style="color:var(--blue)">◈</span> Suivi orbital · ISS · Météo spatiale
+  </h2>
+
+  <div class="grid-space">
+
+    <!-- Carte ISS -->
+    <div class="card accent-blue" style="grid-row:span 2;">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">🛸</span> ISS — Position live</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span id="iss-visible-badge" class="service-badge inactive">INVISIBLE</span>
+          <div class="status-dot off" id="iss-dot"></div>
+        </div>
+      </div>
+
+      <div id="iss-map" style="height:260px;border-radius:8px;overflow:hidden;
+                                border:1px solid var(--border);margin-bottom:12px;position:relative;"></div>
+
+      <!-- Légende carte -->
+      <div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;font-size:10px;">
+        <span style="color:#4da6ff;display:flex;align-items:center;gap:4px;">🛸 ISS</span>
+        <span style="color:#fbbf24;display:flex;align-items:center;gap:4px;">🌤 NOAA</span>
+        <span style="color:#00d4aa;display:flex;align-items:center;gap:4px;">
+          <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#00d4aa"/></svg>Galileo
+        </span>
+        <span style="color:var(--muted);display:flex;align-items:center;gap:4px;">○ sous horizon</span>
+      </div>
+
+      <div class="metric-row">
+        <span class="metric-label">Latitude</span>
+        <span class="metric-value blue" id="iss-lat">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Longitude</span>
+        <span class="metric-value blue" id="iss-lon">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Altitude</span>
+        <span class="metric-value" id="iss-alt">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Vitesse</span>
+        <span class="metric-value" id="iss-vel">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Élévation / Arcachon</span>
+        <span class="metric-value" id="iss-elev">–</span>
+      </div>
+    </div>
+
+    <!-- Prédiction passages -->
+    <div class="card accent-blue">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">↗</span> Prochains passages · Arcachon</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+        <button class="filter-btn active" onclick="filterPasses('all',this)">Tous</button>
+        <button class="filter-btn" onclick="filterPasses('iss',this)">ISS</button>
+        <button class="filter-btn" onclick="filterPasses('noaa',this)">NOAA</button>
+        <button class="filter-btn" onclick="filterPasses('galileo',this)">Galileo</button>
+      </div>
+      <div id="passes-list" style="max-height:240px;overflow-y:auto;">
+        <div style="color:var(--muted);font-size:11px;padding:12px 0">Calcul TLE en cours…</div>
+      </div>
+    </div>
+
+    <!-- Météo spatiale -->
+    <div class="card accent-blue">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">☀</span> Météo spatiale · NOAA SWPC</span>
+        <span class="service-badge inactive" id="storm-badge">–</span>
+      </div>
+
+      <!-- Kp gauge -->
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:16px;">
+        <div style="position:relative;flex-shrink:0;">
+          <svg width="90" height="90" viewBox="0 0 90 90">
+            <circle cx="45" cy="45" r="36" fill="none" stroke="var(--border2)" stroke-width="7"/>
+            <circle cx="45" cy="45" r="36" fill="none" id="kp-ring"
+              stroke="var(--teal)" stroke-width="7"
+              stroke-dasharray="226" stroke-dashoffset="226"
+              stroke-linecap="round"
+              transform="rotate(-90 45 45)"/>
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+                      align-items:center;justify-content:center;">
+            <div style="font-family:var(--display);font-size:1.6rem;font-weight:800;
+                        color:#fff;line-height:1" id="kp-val">–</div>
+            <div style="font-size:9px;color:var(--muted)">Kp</div>
+          </div>
+        </div>
+        <div style="flex:1;">
+          <div class="metric-row">
+            <span class="metric-label">Activité</span>
+            <span class="metric-value" id="storm-level">–</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">F10.7 (flux solaire)</span>
+            <span class="metric-value amber" id="f107-val">–</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Barre Kp historique 24h -->
+      <div style="margin-bottom:10px;">
+        <div style="font-size:9px;color:var(--muted);letter-spacing:.1em;
+                    text-transform:uppercase;margin-bottom:4px;">Kp index — 24h</div>
+        <div id="kp-bars" style="display:flex;align-items:flex-end;
+                                   gap:2px;height:40px;"></div>
+        <div style="display:flex;justify-content:space-between;
+                    font-size:9px;color:var(--muted);margin-top:2px;">
+          <span>-24h</span><span>maintenant</span>
+        </div>
+      </div>
+
+      <!-- Alertes -->
+      <div style="font-size:9px;color:var(--muted);letter-spacing:.1em;
+                  text-transform:uppercase;margin-bottom:6px;">Alertes actives</div>
+      <div id="sw-alerts" style="max-height:100px;overflow-y:auto;">
+        <div style="color:var(--muted);font-size:11px;">Aucune alerte</div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <span id="footer-host">Ground Station Monitor</span>
+    <span id="footer-ts">–</span>
+  </footer>
+
+</div>
+
+<script>
+// ── Clock ──────────────────────────────────────────────────────────────
+function updateClock() {
+  document.getElementById("clock").textContent =
+    new Date().toLocaleTimeString("fr-FR");
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+async function dump1090Control(action) {
+  const msg = el("adsb-msg");
+  msg.textContent = action === "start" ? "Démarrage…" : "Arrêt…";
+  msg.style.color = "var(--amber)";
+  try {
+    const r = await fetch(`/api/dump1090/${action}`, { method: "POST" });
+    const d = await r.json();
+    msg.textContent = d.msg;
+    msg.style.color = d.ok ? "var(--green)" : "var(--coral)";
+  } catch(e) {
+    msg.textContent = "Erreur de connexion";
+    msg.style.color = "var(--coral)";
+  }
+  setTimeout(() => msg.textContent = "", 3000);
+}
+
+// ── GNSS control ──────────────────────────────────────────────────────
+async function gnssControl(action) {
+  const btnStart = document.getElementById("btn-start");
+  const btnStop  = document.getElementById("btn-stop");
+  const msg      = document.getElementById("gnss-msg");
+
+  btnStart.disabled = true;
+  btnStop.disabled  = true;
+  msg.textContent   = action === "start" ? "Démarrage…" : "Arrêt…";
+  msg.style.color   = "var(--amber)";
+
+  try {
+    const res  = await fetch(`/api/gnss/${action}`, { method: "POST" });
+    const data = await res.json();
+    msg.textContent = data.msg;
+    msg.style.color = data.ok ? "var(--green)" : "var(--coral)";
+  } catch (e) {
+    msg.textContent = "Erreur de connexion";
+    msg.style.color = "var(--coral)";
+  } finally {
+    setTimeout(() => {
+      btnStart.disabled = false;
+      btnStop.disabled  = false;
+      msg.textContent   = "";
+    }, 3000);
+  }
+}
+
+// ── WebSocket ──────────────────────────────────────────────────────────
+const WS_URL = `ws://${location.hostname}:8765`;
+let ws;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    const b = document.getElementById("ws-badge");
+    b.className = "ws-badge ok";
+    document.getElementById("ws-label").textContent = "Connecté";
+  };
+
+  ws.onclose = () => {
+    const b = document.getElementById("ws-badge");
+    b.className = "ws-badge fail";
+    document.getElementById("ws-label").textContent = "Déconnecté";
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (e) => {
+    try { render(JSON.parse(e.data)); } catch(_) {}
+  };
+}
+connect();
+
+// ── Helpers ────────────────────────────────────────────────────────────
+const el = (id) => document.getElementById(id);
+const setText = (id, val) => { const e = el(id); if(e) e.textContent = val; };
+const setClass = (id, cls) => {
+  const e = el(id); if(e) e.className = e.className.replace(/\b(ok|warn|err|off|teal|blue|amber)\b/g,'') + ' ' + cls;
+};
+
+function setBar(id, pct) {
+  const e = el(id); if(e) e.style.width = Math.min(100, pct) + "%";
+}
+
+function setCpuRing(pct) {
+  const circ = 150.8;
+  const offset = circ - (pct / 100) * circ;
+  el("cpu-ring").style.strokeDashoffset = offset;
+  el("cpu-pct").textContent = Math.round(pct) + "%";
+}
+
+// ── NOAA render ───────────────────────────────────────────────────────
+function renderNoaa(n) {
+  // Passes
+  const passList = el("noaa-passes");
+  if (n.passes && n.passes.length) {
+    passList.innerHTML = n.passes.map(p => {
+      const mins = Math.round((p.start - Date.now()/1000) / 60);
+      const when = mins > 0 ? `dans ${mins} min` : mins > -2 ? "EN COURS" : p.start_fmt;
+      return `
+        <div class="pass-row">
+          <span class="pass-sat">${p.satellite}</span>
+          <span class="pass-time">${when}</span>
+          <span class="pass-elev">↑${p.max_elev}°</span>
+          <span class="pass-dur">${Math.round(p.duration/60)}min</span>
+        </div>`;
+    }).join("");
+  } else {
+    passList.innerHTML = `<div style="color:var(--muted);font-size:11px;padding:8px 0">
+      Aucun passage > 20° dans les 12h</div>`;
+  }
+
+  if (n.last_update) {
+    setText("noaa-update",
+      "MàJ " + new Date(n.last_update*1000).toLocaleTimeString("fr-FR"));
+  }
+
+  // Synchroniser l'état du bouton AUTO/PAUSE
+  if (typeof n.enabled !== "undefined") {
+    noaaEnabled = n.enabled;
+    updateNoaaToggleBtn();
+  }
+
+  // Statut
+  const badge = el("noaa-status-badge");
+  const statusColors = {
+    idle:      ["inactive", "IDLE"],
+    waiting:   ["inactive", "ATTENTE"],
+    recording: ["active",   "● REC"],
+    decoding:  ["active",   "DÉCODAGE"],
+    done:      ["active",   "OK"],
+  };
+  const [cls, label] = statusColors[n.status] || ["inactive", n.status];
+  badge.className = `service-badge ${cls}`;
+  badge.textContent = label;
+  setText("noaa-status-msg", n.status_msg || "–");
+
+  // Image
+  if (n.last_image) {
+    const ts = n.last_image_ts ? new Date(n.last_image_ts*1000).toLocaleString("fr-FR") : "";
+    el("noaa-image-wrap").innerHTML = `
+      <img src="/images/${n.last_image.split('/').pop()}"
+           style="width:100%;border-radius:6px;border:1px solid var(--border);"
+           alt="Image NOAA ${ts}"/>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">${ts}</div>`;
+  }
+}
+
+async function forceRecord() {
+  const msg = el("noaa-msg");
+  msg.textContent = "Lancement…";
+  msg.style.color = "var(--amber)";
+  try {
+    const r = await fetch("/api/noaa/record", { method: "POST" });
+    const d = await r.json();
+    msg.textContent = d.msg;
+    msg.style.color = d.ok ? "var(--green)" : "var(--coral)";
+  } catch(e) {
+    msg.textContent = "Erreur";
+    msg.style.color = "var(--coral)";
+  }
+  setTimeout(() => msg.textContent = "", 4000);
+}
+
+let noaaEnabled = true;
+
+async function toggleNoaa() {
+  const action = noaaEnabled ? "disable" : "enable";
+  const msg    = el("noaa-msg");
+  msg.textContent = action === "enable" ? "Activation…" : "Désactivation…";
+  msg.style.color = "var(--amber)";
+  try {
+    const r = await fetch(`/api/noaa/${action}`, { method: "POST" });
+    const d = await r.json();
+    noaaEnabled     = action === "enable";
+    msg.textContent = d.msg;
+    msg.style.color = d.ok ? "var(--green)" : "var(--coral)";
+    updateNoaaToggleBtn();
+  } catch(e) {
+    msg.textContent = "Erreur";
+    msg.style.color = "var(--coral)";
+  }
+  setTimeout(() => msg.textContent = "", 3000);
+}
+
+function updateNoaaToggleBtn() {
+  const btn = el("btn-noaa-toggle");
+  if (!btn) return;
+  if (noaaEnabled) {
+    btn.textContent        = "● AUTO";
+    btn.style.borderColor  = "var(--green)";
+    btn.style.color        = "var(--green)";
+    btn.style.background   = "rgba(34,197,94,.08)";
+  } else {
+    btn.textContent        = "○ PAUSE";
+    btn.style.borderColor  = "var(--muted)";
+    btn.style.color        = "var(--muted)";
+    btn.style.background   = "transparent";
+  }
+}
+
+async function resetNoaa() {
+  const msg = el("noaa-msg");
+  msg.textContent = "Reset en cours…";
+  msg.style.color = "var(--amber)";
+  try {
+    const r = await fetch("/api/noaa/reset", { method: "POST" });
+    const d = await r.json();
+    msg.textContent = d.msg;
+    msg.style.color = d.ok ? "var(--green)" : "var(--coral)";
+  } catch(e) {
+    msg.textContent = "Erreur";
+    msg.style.color = "var(--coral)";
+  }
+  setTimeout(() => msg.textContent = "", 3000);
+}
+
+// ── Spectrum Waterfall ────────────────────────────────────────────────
+const WF_ROWS    = 200;   // hauteur waterfall en lignes
+const DB_MIN     = -80;
+const DB_MAX     = -20;
+
+let specWs       = null;
+let specRunning  = false;
+let wfBuffer     = [];    // tableau de lignes FFT
+let wfFreqs      = [];
+let animFrame    = null;
+
+function dbToColor(db) {
+  const t = Math.max(0, Math.min(1, (db - DB_MIN) / (DB_MAX - DB_MIN)));
+  // Palette : bleu→cyan→vert→jaune→rouge
+  if (t < 0.25) {
+    const s = t / 0.25;
+    return [0, Math.round(s*100), Math.round(128 + s*127)];
+  } else if (t < 0.5) {
+    const s = (t-0.25)/0.25;
+    return [0, Math.round(100+s*155), 255];
+  } else if (t < 0.75) {
+    const s = (t-0.5)/0.25;
+    return [Math.round(s*255), 255, Math.round(255-s*255)];
+  } else {
+    const s = (t-0.75)/0.25;
+    return [255, Math.round(255-s*255), 0];
+  }
+}
+
+function drawWaterfall() {
+  const canvas = el("waterfall");
+  const ctx    = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!wfBuffer.length) return;
+  const rowH = H / WF_ROWS;
+
+  for (let i = 0; i < Math.min(wfBuffer.length, WF_ROWS); i++) {
+    const row    = wfBuffer[wfBuffer.length - 1 - i];
+    const y      = H - (i+1) * rowH;
+    const colW   = W / row.length;
+
+    for (let j = 0; j < row.length; j++) {
+      const [r, g, b] = dbToColor(row[j]);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(j * colW, y, colW + 0.5, rowH + 0.5);
+    }
+  }
+}
+
+function drawPowerCurve(powers) {
+  const canvas = el("power-curve");
+  const ctx    = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!powers || !powers.length) return;
+  ctx.strokeStyle = "var(--purple)";
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < powers.length; i++) {
+    const x = (i / (powers.length-1)) * W;
+    const y = H - ((powers[i] - DB_MIN) / (DB_MAX - DB_MIN)) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Ligne de référence -50 dBm
+  ctx.strokeStyle = "rgba(167,139,250,.2)";
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([4, 4]);
+  const yRef = H - ((-50 - DB_MIN) / (DB_MAX - DB_MIN)) * H;
+  ctx.beginPath(); ctx.moveTo(0, yRef); ctx.lineTo(W, yRef); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawFreqAxis(freqs) {
+  const canvas = el("freq-axis");
+  const ctx    = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle    = "var(--muted)";
+  ctx.font         = "10px 'JetBrains Mono'";
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "middle";
+
+  const step = Math.max(1, Math.floor(freqs.length / 10));
+  for (let i = 0; i < freqs.length; i += step) {
+    const x = (i / (freqs.length-1)) * W;
+    ctx.fillText(freqs[i].toFixed(1), x, H/2);
+  }
+}
+
+function applyPreset() {
+  const [fs, fe, st] = el("spec-preset").value.split("|");
+  el("spec-range").textContent = `${fs} → ${fe}`;
+  if (specRunning) {
+    stopSpectrum();
+    setTimeout(() => startSpectrum(fs, fe, st), 300);
+  }
+}
+
+function startSpectrum(fStart, fEnd, step) {
+  const [fs, fe, st] = el("spec-preset").value.split("|");
+  fStart = fStart || fs;
+  fEnd   = fEnd   || fe;
+  step   = step   || st;
+
+  specWs = null;
+  specRunning = true;
+  el("btn-spec-start").textContent = "■ STOP";
+  el("btn-spec-start").style.borderColor = "var(--coral)";
+  el("btn-spec-start").style.color       = "var(--coral)";
+  el("spec-status").textContent = "Scan en cours…";
+  el("spec-range").textContent  = `${fStart} → ${fEnd}`;
+
+  // Polling via fetch (plus simple que WS pour le spectre)
+  async function poll() {
+    if (!specRunning) return;
+    try {
+      const r = await fetch("/api/spectrum", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ f_start: fStart, f_end: fEnd, step })
+      });
+      const d = await r.json();
+      if (d.error) {
+        el("spec-status").textContent = d.error;
+        el("spec-status").style.color = "var(--coral)";
+      } else {
+        wfFreqs = d.freqs;
+        wfBuffer.push(d.powers);
+        if (wfBuffer.length > WF_ROWS) wfBuffer.shift();
+        drawWaterfall();
+        drawPowerCurve(d.powers);
+        drawFreqAxis(d.freqs);
+        el("spec-status").textContent = `${d.freqs.length} bins`;
+        el("spec-status").style.color = "var(--teal)";
+      }
+    } catch(e) {
+      el("spec-status").textContent = "Erreur réseau";
+    }
+    if (specRunning) setTimeout(poll, 1500);
+  }
+  poll();
+}
+
+function stopSpectrum() {
+  specRunning = false;
+  el("btn-spec-start").textContent = "▶ SCANNER";
+  el("btn-spec-start").style.borderColor = "var(--purple)";
+  el("btn-spec-start").style.color       = "var(--purple)";
+  el("spec-status").textContent = "Inactif";
+  el("spec-status").style.color = "var(--muted)";
+}
+
+function toggleSpectrum() {
+  specRunning ? stopSpectrum() : startSpectrum();
+}
+
+// ── ISS Map ────────────────────────────────────────────────────────────
+let issMap = null, issMarker = null, issTrack = null, obsMarker = null;
+let satMarkers = {};      // markers satellites par nom
+let satFootprints = {};   // cercles d'empreinte au sol
+
+const SAT_COLORS = {
+  iss:     "#4da6ff",
+  noaa:    "#fbbf24",
+  galileo: "#00d4aa",
+};
+
+const SAT_ICONS = {
+  iss:     "🛸",
+  noaa:    "🌤",
+  galileo: "◈",
+};
+
+// Rayon d'empreinte au sol en km
+function footprintRadius(alt_km) {
+  const R = 6371;
+  return R * Math.acos(R / (R + alt_km));
+}
+
+function initIssMap() {
+  if (issMap) return;
+  issMap = L.map("iss-map", { zoomControl: true, attributionControl: false })
+             .setView([OBS_LAT, OBS_LON], 3);
+
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 10
+  }).addTo(issMap);
+
+  // Marqueur observateur (Arcachon)
+  const obsIcon = L.divIcon({
+    html: `<div style="width:10px;height:10px;border-radius:50%;
+                background:var(--teal);border:2px solid #fff;
+                box-shadow:0 0 8px var(--teal)"></div>`,
+    iconSize: [10,10], iconAnchor: [5,5],
+  });
+  obsMarker = L.marker([OBS_LAT, OBS_LON], { icon: obsIcon })
+               .bindTooltip("Arcachon ▲").addTo(issMap);
+
+  // Marqueur ISS
+  const issIcon = L.divIcon({
+    html: `<div style="font-size:20px;line-height:1;filter:drop-shadow(0 0 4px #4da6ff)">🛸</div>`,
+    iconSize: [24,24], iconAnchor: [12,12],
+  });
+  issMarker = L.marker([0, 0], { icon: issIcon })
+               .bindTooltip("ISS").addTo(issMap);
+
+  // Trace ISS
+  issTrack = L.polyline([], {
+    color: "#4da6ff", weight: 1.5, opacity: 0.5, dashArray: "4 4"
+  }).addTo(issMap);
+}
+
+function updateSatMarkers(satellites) {
+  if (!issMap) return;
+
+  const seen = new Set();
+
+  for (const sat of satellites) {
+    if (sat.type === "iss") continue; // ISS géré séparément
+    const col  = SAT_COLORS[sat.type] || "#888";
+    const icon = SAT_ICONS[sat.type]  || "●";
+    const key  = sat.name;
+    seen.add(key);
+
+    const opacity  = sat.visible ? 1 : 0.35;
+    const glow     = sat.visible ? `box-shadow:0 0 6px ${col}` : "";
+    const size     = sat.type === "galileo" ? 14 : 18;
+
+    const divIcon = L.divIcon({
+      html: sat.type === "galileo"
+        ? `<div style="width:${size}px;height:${size}px;border-radius:50%;
+               background:${col};opacity:${opacity};${glow};
+               border:1.5px solid rgba(255,255,255,.4)"></div>`
+        : `<div style="font-size:${size}px;line-height:1;opacity:${opacity};
+               filter:drop-shadow(0 0 3px ${col})">${icon}</div>`,
+      iconSize:   [size, size],
+      iconAnchor: [size/2, size/2],
+      className:  "",
+    });
+
+    const tooltip = `${sat.name}\n` +
+      `Alt: ${sat.alt_km} km\n` +
+      `Élév: ${sat.elev}° / Az: ${sat.az}°\n` +
+      (sat.visible ? "✓ Visible" : "○ Sous horizon");
+
+    if (satMarkers[key]) {
+      satMarkers[key].setLatLng([sat.lat, sat.lon]);
+      satMarkers[key].setIcon(divIcon);
+      satMarkers[key].setTooltipContent(tooltip);
+    } else {
+      satMarkers[key] = L.marker([sat.lat, sat.lon], { icon: divIcon })
+                         .bindTooltip(tooltip, { sticky: true })
+                         .addTo(issMap);
+    }
+
+    // Empreinte au sol (seulement si visible et NOAA/ISS)
+    if (sat.type === "noaa") {
+      const radius = footprintRadius(sat.alt_km) * 1000; // en mètres
+      if (satFootprints[key]) {
+        satFootprints[key].setLatLng([sat.lat, sat.lon]);
+        satFootprints[key].setRadius(radius);
+        satFootprints[key].setStyle({ opacity: sat.visible ? 0.4 : 0.1 });
+      } else {
+        satFootprints[key] = L.circle([sat.lat, sat.lon], {
+          radius,
+          color:   col,
+          weight:  1,
+          opacity: sat.visible ? 0.4 : 0.1,
+          fillOpacity: 0.03,
+          dashArray: "4 6",
+        }).addTo(issMap);
+      }
+    }
+  }
+
+  // Supprimer les markers de satellites qui ne sont plus trackés
+  for (const key of Object.keys(satMarkers)) {
+    if (!seen.has(key)) {
+      issMap.removeLayer(satMarkers[key]);
+      delete satMarkers[key];
+      if (satFootprints[key]) {
+        issMap.removeLayer(satFootprints[key]);
+        delete satFootprints[key];
+      }
+    }
+  }
+}
+
+const OBS_LAT = 44.6611, OBS_LON = -1.1638;
+let   passesData = [], passFilter = "all";
+
+function filterPasses(type, btn) {
+  passFilter = type;
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderPassesList();
+}
+
+function renderPassesList() {
+  const el2 = el("passes-list");
+  const now  = Date.now() / 1000;
+  const filtered = passFilter === "all"
+    ? passesData
+    : passesData.filter(p => p.type === passFilter);
+
+  if (!filtered.length) {
+    el2.innerHTML = `<div style="color:var(--muted);font-size:11px;padding:8px 0">
+      Aucun passage prévu</div>`;
+    return;
+  }
+
+  const TYPE_COLOR = { iss: "blue", noaa: "amber", galileo: "teal" };
+
+  el2.innerHTML = filtered.slice(0, 12).map(p => {
+    const mins    = Math.round((p.start - now) / 60);
+    const when    = mins > 1 ? `dans ${mins} min`
+                  : mins > -2 ? `<span style="color:var(--green)">EN COURS</span>`
+                  : p.start_fmt;
+    const col     = TYPE_COLOR[p.type] || "muted";
+    const elColor = p.max_elev > 60 ? "var(--green)"
+                  : p.max_elev > 30 ? "var(--amber)" : "var(--muted)";
+    return `
+      <div class="pass-row">
+        <span class="pass-sat pass-type-${p.type}">${p.name}</span>
+        <span class="pass-time">${when}</span>
+        <span class="pass-elev" style="color:${elColor}">↑${p.max_elev}°</span>
+        <span class="pass-dur">${Math.round(p.duration/60)}min</span>
+      </div>`;
+  }).join("");
+}
+
+// ── Space weather render ──────────────────────────────────────────────
+const KP_COLORS = [
+  "#2dd4bf","#2dd4bf","#2dd4bf","#2dd4bf", // 0-3 calme
+  "#fbbf24","#fbbf24",                       // 4-5 actif
+  "#f87171","#f87171","#ef4444","#dc2626",   // 6-9 tempête
+];
+const STORM_CLASS = {
+  "Calme":        "inactive",
+  "Active":       "inactive",
+  "G1 Mineure":   "active",
+  "G2-G3 Modérée":"active",
+  "G4-G5 Sévère": "active",
+};
+
+function renderSpaceWeather(sw) {
+  if (!sw || !Object.keys(sw).length) return;
+
+  // Kp ring
+  const kp = sw.kp_current ?? 0;
+  const kpPct = Math.min(1, kp / 9);
+  const circ  = 226;
+  el("kp-ring").style.strokeDashoffset = circ - kpPct * circ;
+  el("kp-ring").style.stroke = KP_COLORS[Math.round(kp)] || "#4da6ff";
+  setText("kp-val", kp.toFixed(1));
+
+  // Storm level
+  setText("storm-level", sw.storm_level || "–");
+  el("storm-level").style.color =
+    sw.storm_level?.includes("Sévère") ? "var(--coral)" :
+    sw.storm_level?.includes("Modérée") ? "var(--amber)" :
+    sw.storm_level?.includes("Mineure") ? "var(--amber)" : "var(--green)";
+
+  const badge = el("storm-badge");
+  badge.textContent = sw.storm_level || "–";
+  badge.className = "service-badge " + (STORM_CLASS[sw.storm_level] || "inactive");
+
+  // F10.7
+  setText("f107-val", sw.f107 ? sw.f107.toFixed(1) + " sfu" : "–");
+
+  // Kp bars 24h
+  const bars = el("kp-bars");
+  if (sw.kp_24h?.length) {
+    bars.innerHTML = sw.kp_24h.map(item => {
+      const h   = Math.max(2, Math.round((item.kp / 9) * 40));
+      const col = KP_COLORS[Math.round(item.kp)] || "#4da6ff";
+      return `<div style="flex:1;height:${h}px;background:${col};
+                           border-radius:1px;opacity:.8"
+                   title="Kp ${item.kp} — ${item.t}"></div>`;
+    }).join("");
+  }
+
+  // Alertes
+  const alertsEl = el("sw-alerts");
+  if (sw.alerts?.length) {
+    const SEV_COLOR = {
+      extreme: "var(--coral)", severe: "var(--coral)",
+      strong:  "var(--amber)", moderate: "var(--amber)",
+      minor:   "var(--text2)",
+    };
+    alertsEl.innerHTML = sw.alerts.map(a => `
+      <div style="padding:4px 0;border-bottom:1px solid var(--border);
+                  font-size:11px;color:${SEV_COLOR[a.severity]||'var(--muted)'}">
+        ${a.message}
+      </div>`).join("");
+  } else {
+    alertsEl.innerHTML = `<div style="color:var(--green);font-size:11px">
+      ✓ Aucune alerte active</div>`;
+  }
+}
+
+// ── GNSS render ───────────────────────────────────────────────────────
+const CONST_COLORS = {
+  "GPS":     "#4da6ff",
+  "Galileo": "#00d4aa",
+  "GLONASS": "#f59e0b",
+  "BeiDou":  "#a78bfa",
+  "Multi":   "#8fa3c0",
+};
+
+function renderSkyPlot(satellites) {
+  const g = document.getElementById("sky-sats");
+  g.innerHTML = "";
+  const R = 100; // rayon max (élév 0°)
+
+  for (const sat of satellites) {
+    const elev = sat.elevation || 0;
+    const az   = sat.azimuth   || 0;
+    const azRad = (az - 90) * Math.PI / 180; // 0° = Nord = haut
+    const r    = (1 - elev / 90) * R;
+    const x    = r * Math.cos(azRad);
+    const y    = r * Math.sin(azRad);
+    const col  = CONST_COLORS[sat.constellation] || "#8fa3c0";
+    const used = sat.used;
+    const size = used ? 6 : 4;
+
+    // Cercle satellite
+    const circle = document.createElementNS("http://www.w3.org/2000/svg","circle");
+    circle.setAttribute("cx", x.toFixed(1));
+    circle.setAttribute("cy", y.toFixed(1));
+    circle.setAttribute("r",  size);
+    circle.setAttribute("fill", used ? col : "transparent");
+    circle.setAttribute("stroke", col);
+    circle.setAttribute("stroke-width", used ? 0 : 1.5);
+    circle.setAttribute("opacity", sat.snr > 0 ? 1 : 0.4);
+
+    // Tooltip
+    const title = document.createElementNS("http://www.w3.org/2000/svg","title");
+    title.textContent =
+      `${sat.constellation} PRN${sat.prn}\nÉlév: ${sat.elevation}°  Az: ${sat.azimuth}°\nSNR: ${sat.snr} dB`;
+    circle.appendChild(title);
+    g.appendChild(circle);
+
+    // Label PRN (petits satellites uniquement si assez de place)
+    if (elev > 10) {
+      const txt = document.createElementNS("http://www.w3.org/2000/svg","text");
+      txt.setAttribute("x", (x + size + 2).toFixed(1));
+      txt.setAttribute("y", (y + 3).toFixed(1));
+      txt.setAttribute("fill", col);
+      txt.setAttribute("font-size", "7");
+      txt.setAttribute("font-family", "'JetBrains Mono',monospace");
+      txt.textContent = sat.prn;
+      g.appendChild(txt);
+    }
+  }
+}
+
+function renderGnss(g) {
+  // Status dot
+  el("gnss-dot").className = "status-dot " + (g.running ? "ok" : "off");
+  el("gnss-proc").textContent  = g.running ? "En cours" : "Inactif";
+  el("gnss-proc").className    = "metric-value " + (g.running ? "ok" : "muted");
+
+  // Fix badge
+  const fb = el("fix-badge");
+  if (g.has_fix && g.fix) {
+    fb.textContent  = g.fix.fix_label;
+    fb.className    = "service-badge active";
+  } else {
+    fb.textContent  = "NO FIX";
+    fb.className    = "service-badge inactive";
+  }
+
+  // Position
+  setText("fix-sats", g.sats_used);
+  if (g.fix) {
+    el("fix-lat").textContent  = g.fix.lat?.toFixed(6) + "°" ?? "–";
+    el("fix-lon").textContent  = g.fix.lon?.toFixed(6) + "°" ?? "–";
+    el("fix-alt").textContent  = g.fix.alt != null ? g.fix.alt.toFixed(1) + " m" : "–";
+    el("fix-hdop").textContent = g.fix.hdop ?? "–";
+    el("fix-type").textContent = g.fix.fix_label;
+  } else {
+    ["fix-lat","fix-lon","fix-alt","fix-hdop","fix-type"].forEach(id => setText(id, "–"));
+  }
+
+  // Compteur satellites
+  setText("sat-count", `${g.sats_used} utilisés / ${g.total_sats} en vue`);
+
+  // Résumé par constellation
+  const cs = el("const-summary");
+  cs.innerHTML = Object.entries(g.summary).map(([name, info]) => {
+    const col = CONST_COLORS[name] || "#8fa3c0";
+    return `
+      <div class="const-pill" style="border-color:${col}20;background:${col}10;color:${col}">
+        <span style="font-weight:700">${name}</span>
+        <span style="opacity:.7;margin-left:6px">${info.used}/${info.total}</span>
+        <span style="opacity:.5;margin-left:6px;font-size:10px">SNR ${info.avg_snr} dB</span>
+      </div>`;
+  }).join("") || `<span style="color:var(--muted);font-size:11px">En attente de données…</span>`;
+
+  // Sky plot
+  renderSkyPlot(g.satellites);
+
+  // Tableau satellites
+  const tbody = el("sat-tbody");
+  if (!g.satellites.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--muted)">
+      ${g.running ? "Acquisition en cours…" : "GNSS-SDR non actif — voir guide installation"}
+    </td></tr>`;
+    return;
+  }
+
+  // Trier : Galileo en premier, puis par SNR décroissant
+  const sorted = [...g.satellites].sort((a, b) => {
+    if (a.constellation === "Galileo" && b.constellation !== "Galileo") return -1;
+    if (b.constellation === "Galileo" && a.constellation !== "Galileo") return  1;
+    return b.snr - a.snr;
+  });
+
+  tbody.innerHTML = sorted.map(sat => {
+    const col    = CONST_COLORS[sat.constellation] || "#8fa3c0";
+    const snrPct = Math.min(100, (sat.snr / 50) * 100);
+    const snrCol = sat.snr > 35 ? "#22c55e" : sat.snr > 20 ? "#f59e0b" : "#ff6b6b";
+    return `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;color:${col};font-weight:700">${sat.prn}</td>
+        <td style="padding:6px 10px;color:${col}">${sat.constellation}</td>
+        <td style="padding:6px 10px;text-align:right">${sat.elevation}°</td>
+        <td style="padding:6px 10px;text-align:right">${sat.azimuth}°</td>
+        <td style="padding:6px 10px;text-align:right;color:${snrCol}">${sat.snr || "–"}</td>
+        <td style="padding:6px 10px;text-align:center">
+          ${sat.used
+            ? `<span style="color:var(--green)">✓</span>`
+            : `<span style="color:var(--muted)">–</span>`}
+        </td>
+        <td style="padding:6px 10px;text-align:right">
+          <span class="snr-bar" style="width:${snrPct}px;background:${snrCol};opacity:.8"></span>
+        </td>
+      </tr>`;
+  }).join("");
+}
+
+// ── Render ─────────────────────────────────────────────────────────────
+function render(d) {
+  const { system: s, rtlsdr: r, dump1090: a, services, network } = d;
+
+  // ── Système
+  setCpuRing(s.cpu_pct);
+  el("cpu-val").textContent = s.cpu_pct.toFixed(1) + "%";
+
+  setText("ram-val", `${s.ram_used} / ${s.ram_total} Go (${s.ram_pct}%)`);
+  setBar("ram-bar", s.ram_pct);
+
+  setText("disk-val", `${s.disk_used} / ${s.disk_total} Go (${s.disk_pct}%)`);
+  setBar("disk-bar", s.disk_pct);
+
+  if (s.temp_c !== null) {
+    setText("temp-val", s.temp_c + " °C");
+    const pct = (s.temp_c / 90) * 100;
+    setBar("temp-bar", pct);
+    const tb = el("temp-bar");
+    tb.className = "bar-fill temp-bar-fill" +
+      (s.temp_c > 75 ? " hot" : s.temp_c > 60 ? " warm" : "");
+  } else {
+    setText("temp-val", "N/A");
+  }
+
+  setText("uptime-val", s.uptime);
+  setText("hostname-val", s.hostname);
+
+  // ── RTL-SDR
+  const sdrDot = el("sdr-dot");
+  sdrDot.className = "status-dot " + (r.connected ? "ok" : "err");
+  el("sdr-icon").className = "sdr-icon" + (r.connected ? " connected" : "");
+
+  setText("sdr-name", r.device);
+  setText("sdr-chip", r.chip);
+  el("sdr-status").textContent  = r.connected ? "Connecté" : "Non détecté";
+  el("sdr-status").className    = "metric-value " + (r.connected ? "ok" : "err");
+  el("sdr-inuse").textContent   = r.in_use ? "Oui" : "Non";
+  el("sdr-inuse").className     = "metric-value " + (r.in_use ? "ok" : "muted");
+  setText("sdr-range", r.freq_range);
+  el("sdr-biast").textContent   = r.biast ? "Actif" : "Inactif";
+  el("sdr-biast").className     = "metric-value " + (r.biast ? "ok" : "muted");
+
+  // ── dump1090
+  const adsbDot = el("adsb-dot");
+  adsbDot.className = "status-dot " + (a.running ? "ok" : "off");
+  setText("adsb-planes",  a.planes);
+  setText("adsb-msgs",    a.msgs_30s);
+  el("adsb-service").textContent = a.service || "Inactif";
+  el("adsb-service").className   = "metric-value " + (a.running ? "ok" : "muted");
+  setText("adsb-http", `http://${location.hostname}:${a.port_http}`);
+  setText("adsb-sbs",  `port ${a.port_sbs}`);
+  // Mettre à jour le lien carte
+  const adsbLink = el("adsb-link");
+  if (adsbLink) adsbLink.href = `http://${location.hostname}:${a.port_http}`;
+
+  // ── Services
+  const svcList = el("services-list");
+  svcList.innerHTML = services.map(svc => `
+    <div class="service-row">
+      <div>
+        <div class="service-name">${svc.name}</div>
+        <div class="service-label">${svc.label}</div>
+      </div>
+      <span class="service-badge ${svc.status}">${svc.status}</span>
+    </div>
+  `).join("");
+
+  // ── Réseau
+  const ifList = el("ifaces-list");
+  ifList.innerHTML = network.interfaces.map(i => `
+    <div class="iface-row">
+      <span class="iface-name">${i.name}</span>
+      <span class="iface-ip">${i.ip}</span>
+    </div>
+  `).join("") || '<div class="metric-row"><span class="metric-label">Aucune interface</span></div>';
+
+  setText("net-sent", network.bytes_sent + " Mo");
+  setText("net-recv", network.bytes_recv + " Mo");
+
+  // ── Footer
+  setText("footer-host", `${s.hostname} · ${s.ip}`);
+  setText("footer-ts", "Mis à jour " + new Date(d.ts * 1000).toLocaleTimeString("fr-FR"));
+
+  // ── GNSS
+  if (d.gnss) renderGnss(d.gnss);
+
+  // ── NOAA
+  if (d.noaa) renderNoaa(d.noaa);
+
+  // ── Space
+  if (d.space) {
+    // ISS
+    const iss = d.space.iss;
+    if (iss && iss.lat !== undefined) {
+      initIssMap();
+      issMarker.setLatLng([iss.lat, iss.lon]);
+      issMarker.setTooltipContent(`ISS — ${iss.alt_km} km`);
+      if (d.space.iss_track?.length > 1)
+        issTrack.setLatLngs(d.space.iss_track);
+
+      setText("iss-lat", iss.lat.toFixed(4) + "°");
+      setText("iss-lon", iss.lon.toFixed(4) + "°");
+      setText("iss-alt", iss.alt_km + " km");
+      setText("iss-vel", iss.velocity.toFixed(2) + " km/s");
+      setText("iss-elev", iss.elev + "° / Az " + iss.az + "°");
+
+      const visBadge = el("iss-visible-badge");
+      visBadge.textContent  = iss.visible ? "VISIBLE" : "INVISIBLE";
+      visBadge.className    = "service-badge " + (iss.visible ? "active" : "inactive");
+      el("iss-dot").className = "status-dot " + (iss.visible ? "ok" : "off");
+    }
+
+    // Passes
+    if (d.space.passes) {
+      passesData = d.space.passes;
+      renderPassesList();
+    }
+
+    // Satellites sur la carte
+    if (d.space.sat_positions?.length) {
+      updateSatMarkers(d.space.sat_positions);
+    }
+
+    // Météo spatiale
+    renderSpaceWeather(d.space.space_weather);
+  }
+}
+
+// Init carte après chargement
+document.addEventListener("DOMContentLoaded", () => {
+  setTimeout(initIssMap, 500);
+});
+</script>
+</body>
+</html>
