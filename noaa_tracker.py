@@ -15,7 +15,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 
 log = logging.getLogger("noaa")
 
@@ -245,6 +245,7 @@ _state = {
     "enabled":      True,   # False = scheduler pausé, pas d'enregistrement auto
 }
 _lock = Lock()
+_stop_recording = Event()  # signalé par disable() pour interrompre un enregistrement en cours
 
 
 def get_state() -> dict:
@@ -259,12 +260,15 @@ def _update_state(**kwargs):
 
 def enable():
     """Active l'enregistrement automatique."""
+    log.info("Scheduler NOAA activé (capture automatique)")
     _update_state(enabled=True, status_msg="Scheduler actif")
 
 
 def disable():
     """Désactive l'enregistrement automatique et arrête tout process en cours."""
     import subprocess as _sp
+    log.info("Scheduler NOAA désactivé (capture automatique coupée)")
+    _stop_recording.set()  # réveille immédiatement record_pass() si en attente
     _sp.run(["pkill", "-x", "rtl_fm"],  capture_output=True)
     _sp.run(["pkill", "-x", "sox"],     capture_output=True)
     _update_state(
@@ -281,6 +285,16 @@ def disable():
 
 def record_pass(sat_name: str, freq_hz: int, duration_s: int):
     """Enregistre le signal APT et décode l'image."""
+    # Une capture précédente a pu laisser le signal armé (disable() appelé
+    # entre deux passages) — on repart sur une base propre.
+    _stop_recording.clear()
+
+    if get_state().get("enabled") is False:
+        # Le scheduler a été désactivé juste avant le démarrage du thread
+        # (course avec _scheduler_loop) — ne pas lancer rtl_fm pour rien.
+        log.info(f"Capture NOAA {sat_name} annulée (scheduler désactivé avant démarrage)")
+        return
+
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     wav_out = WORK_DIR / f"noaa_{sat_name}_{ts}.wav"
     img_out = IMAGES_DIR / f"noaa_{sat_name}_{ts}.png"
@@ -288,7 +302,8 @@ def record_pass(sat_name: str, freq_hz: int, duration_s: int):
     _update_state(recording=True, recording_sat=sat_name,
                   status="recording",
                   status_msg=f"Enregistrement {sat_name} ({duration_s}s)…")
-    log.info(f"Début enregistrement {sat_name} @ {freq_hz/1e6:.3f} MHz")
+    log.info(f"Capture NOAA démarrée : {sat_name} @ {freq_hz/1e6:.3f} MHz "
+              f"({duration_s}s)")
 
     p_fm  = None
     p_sox = None
@@ -296,7 +311,7 @@ def record_pass(sat_name: str, freq_hz: int, duration_s: int):
         cmd_rtlfm = [
             "rtl_fm", "-f", str(freq_hz),
             "-M", "fm", "-s", "48000", "-r", "11025",
-            "-g", "42", "-"
+            "-g", "49.6", "-"
         ]
         cmd_sox = [
             "sox", "-t", "raw", "-r", "11025",
@@ -310,8 +325,12 @@ def record_pass(sat_name: str, freq_hz: int, duration_s: int):
                                   stderr=subprocess.DEVNULL)
         p_fm.stdout.close()
 
-        # Attendre la durée prévue puis arrêter proprement
-        time.sleep(duration_s)
+        # Attendre la durée prévue, mais se réveiller immédiatement si
+        # disable()/stop est déclenché — évite de rester bloqué jusqu'à
+        # la fin du passage alors que les process ont déjà été tués.
+        interrupted = _stop_recording.wait(timeout=duration_s)
+        if interrupted:
+            log.info(f"Capture NOAA {sat_name} interrompue (arrêt demandé)")
 
     except Exception as e:
         log.error(f"Erreur enregistrement : {e}")
@@ -331,19 +350,21 @@ def record_pass(sat_name: str, freq_hz: int, duration_s: int):
 
     # Vérifier que le WAV existe et est assez grand
     if not wav_out.exists() or wav_out.stat().st_size < 1_000_000:
+        log.warning(f"Capture NOAA {sat_name} trop courte ou vide — abandon")
         _update_state(recording=False, status="idle",
                       status_msg="Enregistrement trop court ou vide")
         return
 
+    log.info(f"Capture NOAA {sat_name} terminée "
+              f"({wav_out.stat().st_size // 1024} Ko) — décodage APT…")
     _update_state(recording=False, decoding=True,
                   status="decoding", status_msg="Décodage APT…")
-    log.info(f"Décodage {wav_out} ({wav_out.stat().st_size // 1024} Ko)")
 
     # Décodage avec noaa-apt
     try:
         result = subprocess.run(
             ["noaa-apt", str(wav_out), "-o", str(img_out),
-             "--no-sync", "--contrast", "telemetry"],
+             "--contrast", "histogram"],
             capture_output=True, timeout=180,
             cwd=str(WORK_DIR)
         )
@@ -355,7 +376,7 @@ def record_pass(sat_name: str, freq_hz: int, duration_s: int):
                 status="done",
                 status_msg=f"Image reçue — {sat_name} {ts}"
             )
-            log.info(f"Image décodée : {img_out}")
+            log.info(f"Image NOAA décodée : {img_out.name} (satellite {sat_name})")
         else:
             err = result.stderr.decode(errors="ignore").strip()
             raise RuntimeError(err or "Code retour non nul")

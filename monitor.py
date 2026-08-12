@@ -7,6 +7,7 @@ Sert aussi le dashboard HTML sur http://0.0.0.0:8888
 
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -26,11 +27,22 @@ import space_tracker
 
 WS_PORT      = 8765
 WS_SPEC_PORT = 8766   # WebSocket dédié spectre
+WS_LOG_PORT  = 8767   # WebSocket dédié logs
 HTTP_PORT    = 8888
 INTERVAL     = 2
 
+# Logging → stdout, capturé par journalctl (service systemd) et diffusé
+# en direct aux clients du dashboard via le WebSocket logs (port 8767).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("monitor")
+
 clients      = set()
 spec_clients = set()   # clients connectés au spectre
+log_clients  = set()   # clients connectés aux logs
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -105,11 +117,22 @@ def get_rtlsdr() -> dict:
         if match:
             device_name = match.group(1).strip()
 
-    # Vérifier si un process utilise le dongle
-    in_use = bool(run(["pgrep", "-x", "rtl_fm"]) or
-                  run(["pgrep", "-x", "dump1090"]) or
-                  run(["pgrep", "-x", "dump1090-fa"]) or
-                  run(["pgrep", "-f",  "gnss-sdr"]))
+    # Vérifier si un process utilise le dongle — et lequel
+    USERS = [
+        ("gnss-sdr",    "gnss-sdr",    "GNSS-SDR (GPS/Galileo)"),
+        ("dump1090-fa", "dump1090-fa", "dump1090-fa (ADS-B)"),
+        ("dump1090",    "dump1090",    "dump1090 (ADS-B)"),
+        ("rtl_fm",      "rtl_fm",      "rtl_fm (enregistrement NOAA)"),
+        ("rtl_power",   "rtl_power",   "rtl_power (scan spectre)"),
+    ]
+    in_use_by = ""
+    for pattern, exact, label in USERS:
+        matched = (run(["pgrep", "-x", exact]) if exact == pattern
+                   else run(["pgrep", "-f", pattern]))
+        if matched:
+            in_use_by = label
+            break
+    in_use = bool(in_use_by)
 
     # Bias-T (V4 uniquement) — chercher dans /sys
     biast = False
@@ -122,6 +145,7 @@ def get_rtlsdr() -> dict:
         "connected":   connected,
         "device":      device_name if connected else "Non détecté",
         "in_use":      in_use,
+        "in_use_by":   in_use_by,
         "biast":       biast,
         "freq_range":  "25 MHz – 1.7 GHz",
         "chip":        "RTL2838U / R820T2",
@@ -460,6 +484,34 @@ def get_gnss() -> dict:
 
 # ── Spectre FFT (rtl_power) ──────────────────────────────────────────────
 
+def _parse_freq_hz(val: str) -> float:
+    """Convertit une fréquence rtl_power ('137M', '10k', '1.5G', '900') en Hz."""
+    val = val.strip().upper()
+    mult = {"G": 1e9, "M": 1e6, "K": 1e3}.get(val[-1], None)
+    if mult is not None:
+        return float(val[:-1]) * mult
+    return float(val)
+
+
+def _rtl_power_timeout(freq_start: str, freq_end: str, step: str) -> float:
+    """
+    Estime un timeout raisonnable pour rtl_power selon le nombre de hops FFT
+    à balayer (largeur de bande / pas) — une plage étroite avec un petit pas
+    (ex: zoom NOAA 137-138.5MHz au pas de 10k) demande plus de hops, donc
+    plus de temps, qu'un grand scan à pas large, malgré la bande plus étroite.
+    """
+    try:
+        bw   = abs(_parse_freq_hz(freq_end) - _parse_freq_hz(freq_start))
+        step_hz = _parse_freq_hz(step)
+        n_hops = max(1, bw / step_hz)
+    except Exception:
+        n_hops = 1
+    # ~0.3s par hop (calibration + dwell) + marge fixe de démarrage/tuning,
+    # avec un plancher généreux et un plafond pour ne pas bloquer le thread
+    # indéfiniment si rtl_power est réellement planté.
+    return min(45.0, max(15.0, 3.0 + n_hops * 0.3))
+
+
 def get_spectrum_snapshot(freq_start="80M", freq_end="110M",
                            step="100k") -> dict | None:
     """
@@ -474,10 +526,11 @@ def get_spectrum_snapshot(freq_start="80M", freq_end="110M",
         return {"error": "SDR occupé — arrête GNSS-SDR ou dump1090 d'abord"}
 
     try:
+        timeout = _rtl_power_timeout(freq_start, freq_end, step)
         result = subprocess.run(
             ["rtl_power", "-f", f"{freq_start}:{freq_end}:{step}",
              "-i", "1", "-1", "-g", "42", "-"],
-            capture_output=True, timeout=8
+            capture_output=True, timeout=timeout
         )
         lines = result.stdout.decode("utf-8", errors="ignore").strip().split("\n")
         freqs, powers = [], []
@@ -511,6 +564,7 @@ async def spectrum_ws_handler(ws):
     spec_clients.add(ws)
     # Lire les paramètres depuis le premier message client
     freq_start, freq_end, step = "80M", "110M", "200k"
+    started_logged = False
     try:
         async for msg in ws:
             try:
@@ -518,16 +572,112 @@ async def spectrum_ws_handler(ws):
                 freq_start = params.get("f_start", freq_start)
                 freq_end   = params.get("f_end",   freq_end)
                 step       = params.get("step",    step)
+                if not started_logged:
+                    log.info(f"Analyse spectre démarrée : {freq_start}–{freq_end} "
+                              f"(pas {step})")
+                    started_logged = True
                 # Envoyer immédiatement un scan
                 data = await asyncio.get_event_loop().run_in_executor(
                     None, get_spectrum_snapshot, freq_start, freq_end, step
                 )
                 if data:
+                    if data.get("error"):
+                        log.warning(f"Analyse spectre : {data['error']}")
                     await ws.send(json.dumps(data))
             except Exception:
                 break
     finally:
         spec_clients.discard(ws)
+        if started_logged:
+            log.info(f"Analyse spectre arrêtée ({freq_start}–{freq_end})")
+
+
+# ── Logs en direct ───────────────────────────────────────────────────────
+
+def _tail_journal(loop: asyncio.AbstractEventLoop):
+    """
+    Suit les logs du service `monitor` (journalctl -u monitor -f) et
+    diffuse chaque nouvelle ligne aux clients WebSocket connectés.
+    Tourne dans un thread dédié — bloquant, indépendant de la boucle asyncio.
+    """
+    cmd = ["journalctl", "-u", "monitor", "-f", "-n", "100",
+           "--no-pager", "-o", "short-precise"]
+    while True:
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, bufsize=1
+            )
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if not line or not log_clients:
+                    continue
+                asyncio.run_coroutine_threadsafe(
+                    _broadcast_log(line), loop
+                )
+        except FileNotFoundError:
+            # journalctl absent (hors systemd/pas sur le Pi) — abandonner
+            log_msg = "journalctl introuvable — logs indisponibles sur cette machine"
+            if log_clients:
+                asyncio.run_coroutine_threadsafe(_broadcast_log(log_msg), loop)
+            return
+        except Exception:
+            pass
+        time.sleep(3)  # reconnexion si journalctl s'arrête
+
+
+async def _broadcast_log(line: str):
+    if not log_clients:
+        return
+    payload = json.dumps({"line": line, "ts": time.time()})
+    await asyncio.gather(*[c.send(payload) for c in log_clients],
+                         return_exceptions=True)
+
+
+async def logs_ws_handler(ws):
+    log_clients.add(ws)
+    try:
+        await ws.wait_closed()
+    finally:
+        log_clients.discard(ws)
+
+
+# ── Contrôle système ─────────────────────────────────────────────────────
+
+def system_reboot() -> dict:
+    """Redémarre le Raspberry Pi via sudo (nécessite NOPASSWD pour /sbin/reboot)."""
+    log.warning("Redémarrage système demandé depuis le dashboard")
+    try:
+        subprocess.Popen(["sudo", "/sbin/reboot"])
+        return {"ok": True, "msg": "Redémarrage du système en cours…"}
+    except Exception as e:
+        log.error(f"Échec du redémarrage système : {e}")
+        return {"ok": False, "msg": f"Erreur reboot : {e}"}
+
+
+def system_stop_all() -> dict:
+    """Arrête tous les consommateurs du dongle RTL-SDR (dump1090, GNSS-SDR, NOAA)
+    ainsi que le scheduler NOAA, pour libérer le SDR sans redémarrer le Pi."""
+    log.warning("Arrêt de tous les services demandé depuis le dashboard")
+    errors = []
+    try:
+        dump1090_stop()
+    except Exception as e:
+        errors.append(f"dump1090 : {e}")
+    try:
+        gnss_stop()
+    except Exception as e:
+        errors.append(f"GNSS-SDR : {e}")
+    try:
+        noaa_tracker.disable()
+    except Exception as e:
+        errors.append(f"NOAA : {e}")
+
+    if errors:
+        msg = "Arrêt partiel — " + " ; ".join(errors)
+        log.error(msg)
+        return {"ok": False, "msg": msg}
+    return {"ok": True, "msg": "Tous les services ont été arrêtés"}
 
 
 # ── Payload complet ──────────────────────────────────────────────────────
@@ -550,12 +700,15 @@ def collect() -> dict:
 
 async def ws_handler(ws):
     clients.add(ws)
+    peer = ws.remote_address[0] if ws.remote_address else "?"
+    log.info(f"Client dashboard connecté ({peer}) — {len(clients)} actif(s)")
     try:
         # Envoyer les données immédiatement à la connexion
         await ws.send(json.dumps(collect()))
         await ws.wait_closed()
     finally:
         clients.remove(ws)
+        log.info(f"Client dashboard déconnecté ({peer}) — {len(clients)} actif(s)")
 
 
 async def broadcaster():
@@ -574,6 +727,9 @@ DUMP1090_WEB_PROC = None
 DUMP1090_LOCK     = Lock()
 
 DUMP1090_SERVER = "/home/suri/dump1090/server.py"
+
+GNSS_PROC = None
+GNSS_LOCK = Lock()
 
 
 def dump1090_start() -> dict:
@@ -594,6 +750,7 @@ def dump1090_start() -> dict:
             return False
 
         if sdr_busy("gnss-sdr") or sdr_busy("rtl_fm"):
+            log.warning("Démarrage dump1090 refusé — SDR occupé")
             return {"ok": False, "msg": "SDR occupé — arrête GNSS-SDR d'abord"}
         # Chercher l'exécutable dump1090
         exe = None
@@ -605,6 +762,7 @@ def dump1090_start() -> dict:
                 exe = path
                 break
         if not exe:
+            log.error("Démarrage dump1090 impossible — exécutable introuvable")
             return {"ok": False, "msg": "dump1090 introuvable"}
         try:
             # Lancer dump1090
@@ -621,8 +779,10 @@ def dump1090_start() -> dict:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+            log.info(f"dump1090 démarré ({exe}, PID {DUMP1090_PROC.pid})")
             return {"ok": True, "msg": f"dump1090 démarré (PID {DUMP1090_PROC.pid})"}
         except Exception as e:
+            log.error(f"Échec démarrage dump1090 : {e}")
             return {"ok": False, "msg": str(e)}
 
 
@@ -641,6 +801,7 @@ def dump1090_stop() -> dict:
         run(["pkill", "-x", "dump1090"])
         run(["pkill", "-x", "dump1090-fa"])
         run(["pkill", "-f", "server.py"])
+        log.info("dump1090 arrêté")
         return {"ok": True, "msg": "dump1090 arrêté"}
 
 
@@ -651,6 +812,7 @@ def gnss_start() -> dict:
             return {"ok": False, "msg": "GNSS-SDR déjà en cours"}
         config = Path(__file__).parent / "gnss-sdr-rtlsdr.conf"
         if not config.exists():
+            log.error(f"Démarrage GNSS-SDR impossible — config introuvable : {config}")
             return {"ok": False, "msg": f"Config introuvable : {config}"}
         try:
             GNSS_PROC = subprocess.Popen(
@@ -659,8 +821,10 @@ def gnss_start() -> dict:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            log.info(f"GNSS-SDR démarré (PID {GNSS_PROC.pid})")
             return {"ok": True, "msg": f"GNSS-SDR démarré (PID {GNSS_PROC.pid})"}
         except Exception as e:
+            log.error(f"Échec démarrage GNSS-SDR : {e}")
             return {"ok": False, "msg": str(e)}
 
 
@@ -677,6 +841,7 @@ def gnss_stop() -> dict:
             GNSS_PROC = None
         # Tuer aussi tout process gnss-sdr externe
         run(["pkill", "-x", "gnss-sdr"])
+        log.info("GNSS-SDR arrêté")
         return {"ok": True, "msg": "GNSS-SDR arrêté"}
 
 
@@ -696,20 +861,45 @@ class ApiHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path == "/api/gnss/start":
-            result = gnss_start()
+        try:
+            result = self._dispatch_post()
+        except Exception as e:
+            result = {"ok": False, "msg": f"Erreur serveur : {e}"}
+
+        if result is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(result).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _dispatch_post(self):
+        if self.path == "/api/system/reboot":
+            return system_reboot()
+        elif self.path == "/api/system/stop_all":
+            return system_stop_all()
+        elif self.path == "/api/gnss/start":
+            return gnss_start()
         elif self.path == "/api/gnss/stop":
-            result = gnss_stop()
+            return gnss_stop()
         elif self.path == "/api/dump1090/start":
-            result = dump1090_start()
+            return dump1090_start()
         elif self.path == "/api/dump1090/stop":
-            result = dump1090_stop()
+            return dump1090_stop()
         elif self.path == "/api/noaa/enable":
             noaa_tracker.enable()
-            result = {"ok": True, "msg": "Scheduler NOAA activé"}
+            return {"ok": True, "msg": "Scheduler NOAA activé"}
         elif self.path == "/api/noaa/disable":
             noaa_tracker.disable()
-            result = {"ok": True, "msg": "Scheduler NOAA désactivé"}
+            return {"ok": True, "msg": "Scheduler NOAA désactivé"}
+        elif self.path == "/api/noaa/stop":
+            noaa_tracker.disable()
+            return {"ok": True, "msg": "Service NOAA arrêté"}
         elif self.path == "/api/noaa/record":
             state  = noaa_tracker.get_state()
             passes = state.get("passes", [])
@@ -720,9 +910,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 dur  = p["duration"] + 60
                 Thread(target=noaa_tracker.record_pass,
                        args=(sat, freq, dur), daemon=True).start()
-                result = {"ok": True, "msg": f"Enregistrement {sat} lancé"}
+                return {"ok": True, "msg": f"Enregistrement {sat} lancé"}
             else:
-                result = {"ok": False, "msg": "Aucun passage prévu"}
+                return {"ok": False, "msg": "Aucun passage prévu"}
         elif self.path == "/api/noaa/reset":
             run(["pkill", "-x", "rtl_fm"])
             run(["pkill", "-x", "sox"])
@@ -731,7 +921,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 recording_sat=None,
                 status="idle", status_msg="Reset manuel"
             )
-            result = {"ok": True, "msg": "État remis à zéro"}
+            return {"ok": True, "msg": "État remis à zéro"}
         elif self.path == "/api/spectrum":
             # Scan unique — paramètres dans le body JSON
             length = int(self.headers.get("Content-Length", 0))
@@ -745,18 +935,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 params.get("f_end",   "110M"),
                 params.get("step",    "200k"),
             )
-            result = data or {"error": "Scan impossible"}
+            return data or {"error": "Scan impossible"}
         else:
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        body = json.dumps(result).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
+            return None
 
     def do_GET(self):
         if self.path in ("/", "/dashboard.html"):
@@ -777,20 +958,25 @@ class ApiHandler(SimpleHTTPRequestHandler):
 def run_http():
     os.chdir(Path(__file__).parent)
     server = HTTPServer(("0.0.0.0", HTTP_PORT), ApiHandler)
-    print(f"Dashboard → http://0.0.0.0:{HTTP_PORT}")
     server.serve_forever()
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
 
 async def main():
+    log.info("═══ Démarrage Ground Station Monitor ═══")
     noaa_tracker.start()
     space_tracker.start()
-    print(f"WebSocket données → ws://0.0.0.0:{WS_PORT}")
-    print(f"WebSocket spectre → ws://0.0.0.0:{WS_SPEC_PORT}")
+    log.info(f"Dashboard         → http://0.0.0.0:{HTTP_PORT}")
+    log.info(f"WebSocket données → ws://0.0.0.0:{WS_PORT}")
+    log.info(f"WebSocket spectre → ws://0.0.0.0:{WS_SPEC_PORT}")
+    log.info(f"WebSocket logs    → ws://0.0.0.0:{WS_LOG_PORT}")
     Thread(target=run_http, daemon=True).start()
+    Thread(target=_tail_journal, args=(asyncio.get_event_loop(),),
+           daemon=True, name="log-tail").start()
     async with serve(ws_handler, "0.0.0.0", WS_PORT), \
-               serve(spectrum_ws_handler, "0.0.0.0", WS_SPEC_PORT):
+               serve(spectrum_ws_handler, "0.0.0.0", WS_SPEC_PORT), \
+               serve(logs_ws_handler, "0.0.0.0", WS_LOG_PORT):
         await broadcaster()
 
 

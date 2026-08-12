@@ -8,6 +8,11 @@ Restart=always
 RestartSec=5
 User=suri
 WorkingDirectory=/home/suri/monitor
+# Tue tout le cgroup (rtl_fm, sox, gnss-sdr, rtl_power, dump1090…) à l'arrêt
+# du service, pas seulement le PID principal — évite les process orphelins
+# qui gardent le dongle RTL-SDR occupé après un stop/restart.
+KillMode=control-group
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
